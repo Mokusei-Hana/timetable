@@ -1,0 +1,53 @@
+name: 打包成 iPhone 安装包
+
+# 手动点按钮就会跑一遍，往 main 分支推代码也会自动跑
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-ipa:
+    # 用 GitHub 免费提供的苹果电脑。如果这台机器不存在了，改成 macos-latest
+    runs-on: macos-15
+
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 看一眼 Xcode 版本
+        run: xcodebuild -version
+
+      - name: 安装 XcodeGen（用 project.yml 生成工程的小工具）
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译（不签名，签名留到装到手机那一步做）
+        run: |
+          xcodebuild \
+            -project CourseTable.xcodeproj \
+            -scheme CourseTable \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: 打成 ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/CourseTable.app Payload/
+          zip -qry CourseTable.ipa Payload
+          ls -lh CourseTable.ipa
+
+      - name: 上传 ipa（在网页上就能下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: CourseTable-ipa
+          path: CourseTable.ipa
+          if-no-files-found: error
