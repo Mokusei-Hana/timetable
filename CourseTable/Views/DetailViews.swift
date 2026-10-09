@@ -58,7 +58,7 @@ struct TodayAgendaView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            let today = TodaySnapshot(doc: store.doc, now: context.date)
+            let today = TodaySnapshot(schedule: store.todaySchedule, now: context.date)
             List {
                 if today.lessons.isEmpty {
                     ContentUnavailableView(today.emptyTitle, systemImage: "sun.max",
@@ -83,6 +83,7 @@ struct TodayAgendaView: View {
                     }
                 }
             }
+            .onChange(of: context.date) { _, date in store.refreshToday(date) }
         }
         .navigationTitle("今日安排")
         .navigationBarTitleDisplayMode(.inline)
@@ -140,6 +141,7 @@ struct SettingsView: View {
                 Text("无需登录，课程保存在这台 iPhone 上。App 不会主动联网，也不会上传课表。")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
+            if store.isBusy { ProgressView("正在处理课表…") }
             Section("当前数据") {
                 LabeledContent("来源", value: store.sourceName)
                 if store.hasData {
@@ -153,10 +155,10 @@ struct SettingsView: View {
             Section {
                 Button { importing = true } label: {
                     Label("导入课表文件", systemImage: "square.and.arrow.down")
-                }
-                Button { store.resetToBundled() } label: {
+                }.disabled(store.isBusy)
+                Button { Task { await store.resetToBundled() } } label: {
                     Label("恢复自带课表", systemImage: "arrow.counterclockwise")
-                }.disabled(!store.isImported && store.hasData)
+                }.disabled(store.isBusy || (!store.isImported && store.hasData))
             } header: {
                 Text("更新课表")
             } footer: {
@@ -167,7 +169,7 @@ struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { result in
             switch result {
-            case .success(let url): store.importFile(at: url)
+            case .success(let url): Task { await store.importFile(at: url) }
             case .failure(let error):
                 if let cocoa = error as? CocoaError, cocoa.code == .userCancelled { return }
                 store.message = "无法打开文件：\(error.localizedDescription)"

@@ -1,14 +1,14 @@
 import Foundation
 
 /// 一个大节对应课表中的一行，位置从零开始。
-struct ClassBlock: Codable, Hashable, Identifiable {
+struct ClassBlock: Codable, Hashable, Identifiable, Sendable {
     var index: Int
     var label: String
     var sections: String
     var id: Int { index }
 }
 
-struct Course: Codable, Hashable, Identifiable {
+struct Course: Codable, Hashable, Identifiable, Sendable {
     var id: String
     var name: String
     var teacher: String
@@ -32,10 +32,12 @@ struct Course: Codable, Hashable, Identifiable {
         return value.isEmpty ? location : value
     }
 
-    /// 固定哈希不受进程随机种子影响，同名课程始终使用同一色系。
+    /// 学校课程编号跨星期、跨周次一致；排课记录 id 则可能不同，因此不用于配色。
     var colorSeed: Int {
         var hash: UInt32 = 2166136261
-        for byte in name.utf8 { hash = (hash ^ UInt32(byte)) &* 16777619 }
+        let code = courseCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = code.isEmpty ? "name:" + name.trimmingCharacters(in: .whitespacesAndNewlines) + "|" + teacher : "code:" + code
+        for byte in key.precomposedStringWithCanonicalMapping.utf8 { hash = (hash ^ UInt32(byte)) &* 16777619 }
         return Int(hash & 0x7FFF_FFFF)
     }
 
@@ -54,7 +56,7 @@ struct Course: Codable, Hashable, Identifiable {
     }
 }
 
-struct TimetableDoc: Codable {
+struct TimetableDoc: Codable, Sendable {
     var schemaVersion: Int
     var exportedAt: String
     var term: String
@@ -129,7 +131,7 @@ struct TimetableDoc: Codable {
         try require(Self.calendar.component(.weekday, from: start) == 2, "termStartDate 必须是第 1 周的周一。")
         try require(Self.parseDate(exportedAt) != nil, "exportedAt 必须是 yyyy-MM-dd 格式的有效日期。")
         let sorted = blocks.sorted { $0.index < $1.index }
-        try require(sorted.map(\.index) == Array(0..<6), "blocks 必须包含 index 0 到 5 的六个大节。")
+        try require(!sorted.isEmpty && sorted.map(\.index) == Array(0..<sorted.count), "blocks 的 index 必须从 0 开始连续排列。")
         for block in sorted {
             let expected = [block.index * 2 + 1, block.index * 2 + 2]
             let actual = block.sections.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
@@ -139,8 +141,8 @@ struct TimetableDoc: Codable {
         for course in courses {
             try require(!course.id.isEmpty && !course.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "课程 id 和 name 不能为空。")
             try require((1...7).contains(course.day), "「\(course.name)」的 day 必须为 1 到 7。")
-            try require((0..<6).contains(course.startBlock) && (1...6).contains(course.span), "「\(course.name)」的起始大节或跨度无效。")
-            try require(course.startBlock + course.span <= 6, "「\(course.name)」超出了当天六个大节。")
+            try require((0..<sorted.count).contains(course.startBlock) && (1...sorted.count).contains(course.span), "「\(course.name)」的起始大节或跨度无效。")
+            try require(course.span <= sorted.count - course.startBlock, "「\(course.name)」超出了当天大节范围。")
             try require(course.weeks.allSatisfy { (1...totalWeeks).contains($0) }, "「\(course.name)」的周次超出了学期范围。")
             try require(course.minuteRange != nil, "「\(course.name)」的 time 应为当天的 HH:mm-HH:mm，结束时间应晚于开始时间。")
             try require((course.hours ?? 0) >= 0, "「\(course.name)」的 hours 不能为负数。")

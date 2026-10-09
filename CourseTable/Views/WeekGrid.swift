@@ -1,97 +1,135 @@
 import SwiftUI
 
+/// 只依赖容器和字体约束；不会读取滚动位置或把几何结果写回状态。
+private struct GridMetrics {
+    let gap: CGFloat = 3
+    let rail: CGFloat
+    let column: CGFloat
+    let header: CGFloat
+    let row: CGFloat
+    let contentHeight: CGFloat
+
+    init(size: CGSize, rowCount: Int, fontSize: CGFloat) {
+        let count = max(1, rowCount)
+        rail = min(44, max(24, fontSize * 2))
+        column = max(1, (size.width - rail - 7 * gap) / 7)
+        header = max(40, fontSize * 3.2)
+        let minimum = max(52, fontSize * 3.4 + 8)
+        let maximum = max(minimum, 100)
+        let usable = size.height - header - gap - CGFloat(count - 1) * gap
+        row = min(maximum, max(minimum, floor(usable / CGFloat(count))))
+        contentHeight = header + gap + row * CGFloat(count) + gap * CGFloat(count - 1)
+    }
+}
+
 struct WeekGrid: View {
-    @EnvironmentObject private var store: TimetableStore
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 144
-    @ScaledMetric(relativeTo: .body) private var columnWidth: CGFloat = 132
-    @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 64
-    @ScaledMetric(relativeTo: .caption) private var railWidth: CGFloat = 48
-    let showWeekend: Bool
-    let select: (Course) -> Void
-    private let gap = Design.gap
-    private var gridHeight: CGFloat { rowHeight * 6 + gap * 5 }
+    @ScaledMetric(relativeTo: .caption) private var fontSize: CGFloat = 12
+    let snapshot: WeekPresentation
+    let today: Date
+    let viewport: CGSize
+    let scrolls: Bool
+    let select: (CourseCluster) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(spacing: gap) {
-                Text("节次").font(.caption).foregroundStyle(.secondary)
-                    .frame(height: headerHeight)
-                ForEach(store.doc.blocks) { block in
-                    VStack(spacing: 4) {
-                        Text(String(format: "%02d", block.index * 2 + 1)).font(.subheadline.weight(.semibold))
-                        Text(String(format: "%02d", block.index * 2 + 2)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .frame(height: rowHeight, alignment: .top)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(block.label)
-                }
+        let metrics = GridMetrics(size: viewport, rowCount: snapshot.blocks.count, fontSize: fontSize)
+        Group {
+            if scrolls {
+                ScrollView(.vertical) { grid(metrics) }
+                    .scrollBounceBehavior(.basedOnSize)
+            } else {
+                grid(metrics)
             }
-            .frame(width: railWidth)
-            .padding(.leading, 8)
-
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: gap) {
-                    ForEach(1..<(showWeekend ? 8 : 6), id: \.self) { day in
-                        dayColumn(day)
-                    }
-                }.padding(.trailing, Design.inset)
-            }
-            .scrollIndicators(.hidden)
         }
     }
 
-    private func dayColumn(_ day: Int) -> some View {
-        let layout = DayLayout(courses: store.doc.lessons(day: day, week: store.week))
-        let width = columnWidth * CGFloat(layout.lanes.count) + gap * CGFloat(layout.lanes.count - 1)
-        let date = store.doc.date(day: day, week: store.week)
-        let isToday = date.map { TimetableDoc.calendar.isDateInToday($0) } ?? false
-        return VStack(spacing: gap) {
-            VStack(spacing: 4) {
-                Text(isToday ? "今天 · \(TimetableDoc.dayName(day))" : TimetableDoc.dayName(day))
-                    .font(.caption.weight(.semibold))
-                if let date { Text(date, format: .dateTime.day()).font(.title3.weight(.semibold)) }
-            }
-            .foregroundStyle(isToday ? Color.accentColor : Color.primary)
-            .frame(width: width, height: headerHeight)
-            .background(isToday ? Color.accentColor.opacity(0.10) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 12))
-
-            HStack(alignment: .top, spacing: gap) {
-                ForEach(layout.lanes.indices, id: \.self) { lane in
-                    ZStack(alignment: .topLeading) {
-                        ForEach(layout.lanes[lane]) { course in
-                            courseCard(course)
-                                .frame(width: columnWidth, height: rowHeight * CGFloat(course.span) + gap * CGFloat(course.span - 1))
-                                .offset(y: CGFloat(course.startBlock) * (rowHeight + gap))
-                        }
-                    }
-                    .frame(width: columnWidth, height: gridHeight, alignment: .topLeading)
+    private func grid(_ metrics: GridMetrics) -> some View {
+        HStack(alignment: .top, spacing: metrics.gap) {
+            VStack(spacing: metrics.gap) {
+                Text("节次").font(.system(size: fontSize)).foregroundStyle(.secondary)
+                    .frame(width: metrics.rail, height: metrics.header)
+                ForEach(snapshot.blocks) { block in
+                    Text(block.sections.replacingOccurrences(of: ",", with: "\n"))
+                        .font(.system(size: fontSize, weight: .medium)).monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: metrics.rail, height: metrics.row, alignment: .top)
+                        .accessibilityLabel(block.label)
                 }
             }
+            ForEach(snapshot.days) { day in
+                dayColumn(day, metrics: metrics)
+            }
         }
-        .frame(width: width)
+        .frame(width: viewport.width, height: metrics.contentHeight, alignment: .topLeading)
     }
 
-    private func courseCard(_ course: Course) -> some View {
+    private func dayColumn(_ day: DayPresentation, metrics: GridMetrics) -> some View {
+        let isToday = day.date.map { TimetableDoc.calendar.isDate($0, inSameDayAs: today) } ?? false
+        let gridHeight = metrics.contentHeight - metrics.header - metrics.gap
+        return VStack(spacing: metrics.gap) {
+            VStack(spacing: 2) {
+                Text(metrics.column < fontSize * 2 + 4 ? String(TimetableDoc.dayName(day.day).suffix(1)) : TimetableDoc.dayName(day.day)).lineLimit(1)
+                if let date = day.date {
+                    Text(date, format: .dateTime.day()).monospacedDigit()
+                        .font(.system(size: min(fontSize, max(12, (metrics.column - 4) / 1.3)), weight: .medium))
+                }
+            }
+            .font(.system(size: fontSize, weight: isToday ? .bold : .medium))
+            .foregroundStyle(isToday ? Color.accentColor : Color.secondary)
+            .frame(width: metrics.column, height: metrics.header)
+            .background(isToday ? Color.accentColor.opacity(0.12) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .clipped()
+            .accessibilityLabel("\(TimetableDoc.dayName(day.day))\(isToday ? "，今天" : "")")
+            ZStack(alignment: .topLeading) {
+                ForEach(day.clusters) { cluster in
+                    let height = metrics.row * CGFloat(cluster.span) + metrics.gap * CGFloat(cluster.span - 1)
+                    clusterCard(cluster, width: metrics.column, height: height)
+                        .frame(width: metrics.column, height: height)
+                        .offset(y: CGFloat(cluster.startBlock) * (metrics.row + metrics.gap))
+                }
+            }
+            .frame(width: metrics.column, height: gridHeight, alignment: .topLeading)
+        }
+    }
+
+    private func clusterCard(_ cluster: CourseCluster, width: CGFloat, height: CGFloat) -> some View {
+        let lesson = cluster.lessons[0]
         let dark = colorScheme == .dark
-        return Button { select(course) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(course.name).font(.subheadline.weight(.semibold)).lineLimit(4)
+        let padding: CGFloat = width < 44 ? 3 : 5
+        // 七列总览的字号下限为 12；辅助功能大字号超出单列时，以列宽为上限，列表保留完整字号。
+        let cardFont = min(fontSize, max(12, width - padding * 2))
+        let showLocation = !cluster.isConflict && width >= cardFont * 3.5 && height >= cardFont * 7.5
+        let reserved = showLocation ? cardFont * 2.4 : (cluster.isConflict ? cardFont * 1.5 : 0)
+        let lines = max(1, min(6, Int((height - padding * 2 - reserved) / (cardFont * 1.3))))
+        return Button { select(cluster) } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                if cluster.isConflict {
+                    HStack(spacing: 2) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text("\(cluster.lessons.count)").lineLimit(1)
+                    }.font(.system(size: cardFont, weight: .bold))
+                }
+                Text(lesson.course.name)
+                    .font(.system(size: cardFont, weight: .semibold))
+                    .lineLimit(lines).truncationMode(.tail)
                 Spacer(minLength: 0)
-                Text(course.shortLocation.isEmpty ? "地点未提供" : course.shortLocation)
-                    .font(.caption).lineLimit(2)
+                if showLocation {
+                    Text(lesson.shortLocation).font(.system(size: cardFont)).lineLimit(2)
+                }
             }
             .multilineTextAlignment(.leading)
-            .padding(12)
+            .padding(padding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .foregroundStyle(Design.ink(course, dark: dark))
-            .background(Design.fill(course, dark: dark), in: RoundedRectangle(cornerRadius: 12))
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(Design.ink(lesson.colorIndex, dark: dark))
+            .background(Design.fill(lesson.colorIndex, dark: dark), in: RoundedRectangle(cornerRadius: 8))
+            .clipped()
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(course.name)，\(TimetableDoc.dayName(course.day))，\(course.time)，\(course.location)")
-        .accessibilityHint("查看完整课程信息")
+        .accessibilityLabel(cluster.isConflict
+            ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
+            : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
+        .accessibilityHint("窄卡片省略的信息可在详情或列表中完整查看")
     }
 }
