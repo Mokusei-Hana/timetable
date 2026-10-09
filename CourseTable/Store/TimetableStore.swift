@@ -1,184 +1,129 @@
 import Foundation
+import Combine
 
-/// 课表数据 + 当前看第几周。界面上的东西都从这里读。
+@MainActor
 final class TimetableStore: ObservableObject {
-    /// 课表内容
-    @Published private(set) var doc: TimetableDoc
-    /// 数据是哪来的，显示在底部方便区分
-    @Published private(set) var sourceName: String
-    /// 正在看第几周
-    @Published var week: Int
-    /// 需要弹给用户看的一句话，nil 表示不弹
+    @Published private(set) var doc: TimetableDoc = .empty
+    @Published private(set) var week = 1
+    @Published private(set) var sourceName = "没有数据"
+    @Published private(set) var isImported = false
     @Published var message: String?
+    private var followsToday = true
 
-    private static let importedFileName = "timetable.json"
-
-    init() {
-        let imported = Self.loadImported()
-        let bundled = Self.loadBundled()
-
-        let document: TimetableDoc
-        let name: String
-        if let imported {
-            document = imported
-            name = "用导入的数据"
-        } else if let bundled {
-            document = bundled
-            name = "用自带的数据"
-        } else {
-            document = .empty
-            name = "没有数据"
-        }
-
-        doc = document
-        sourceName = name
-        // 打开就停在今天所在的那一周
-        week = Self.weekForToday(in: document)
-    }
-
-    // MARK: - 改周次
-
+    var hasData: Bool { !doc.blocks.isEmpty }
     var totalWeeks: Int { max(1, doc.totalWeeks) }
 
-    func changeWeek(by delta: Int) {
-        week = min(max(1, week + delta), totalWeeks)
+    init() {
+        do {
+            let url = try Self.importedURL()
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    apply(try Self.read(url), imported: true)
+                    return
+                } catch {
+                    message = "保存的课表无法读取，已尝试使用自带数据。\n\(error.localizedDescription)"
+                }
+            }
+            apply(try Self.bundled(), imported: false)
+        } catch {
+            message = "课表读取失败，请从「数据管理」导入。\n\(error.localizedDescription)"
+        }
     }
+
+    func selectWeek(_ value: Int) {
+        followsToday = false
+        week = min(max(1, value), totalWeeks)
+    }
+
+    func changeWeek(by delta: Int) { selectWeek(week + delta) }
 
     func jumpToToday() {
-        week = Self.weekForToday(in: doc)
+        followsToday = true
+        refreshToday()
     }
 
-    /// 现在看到的这一周是不是就是今天所在的周
-    var isShowingToday: Bool {
-        doc.week(containing: Date()) == week
-    }
-
-    private static func weekForToday(in doc: TimetableDoc) -> Int {
-        let today = doc.week(containing: Date()) ?? 1
-        return min(max(1, today), max(1, doc.totalWeeks))
-    }
-
-    // MARK: - 日期显示
-
-    /// 这一周七天的日期
-    var weekDates: [Date] {
-        guard let monday = doc.monday(ofWeek: week) else { return [] }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: monday) }
-    }
-
-    /// 学期第一周到这一周，写成「10/05 - 10/11」
-    var weekRangeText: String {
-        let dates = weekDates
-        guard let first = dates.first, let last = dates.last else { return "" }
-        return "\(Self.shortDate.string(from: first)) - \(Self.shortDate.string(from: last))"
-    }
-
-    /// 要显示哪几天
-    func visibleDays(dayCount: Int) -> [Int] {
-        Array(1...min(max(1, dayCount), 7))
-    }
-
-    func weekdayName(_ day: Int) -> String {
-        let names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        guard day >= 1, day <= 7 else { return "" }
-        return names[day - 1]
-    }
-
-    func dayNumberText(_ day: Int) -> String {
-        guard let date = date(forDay: day) else { return "" }
-        return Self.shortDate.string(from: date)
-    }
-
-    func date(forDay day: Int) -> Date? {
-        let dates = weekDates
-        guard day >= 1, day <= dates.count else { return nil }
-        return dates[day - 1]
-    }
-
-    /// 这一列是不是今天
-    func isToday(_ day: Int) -> Bool {
-        guard let date = date(forDay: day) else { return false }
-        return Calendar.current.isDateInToday(date)
-    }
-
-    private static let shortDate: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MM/dd"
-        return formatter
-    }()
-
-    // MARK: - 读数据
-
-    private static var importedURL: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent(importedFileName)
-    }
-
-    private static func loadImported() -> TimetableDoc? {
-        guard let url = importedURL, let data = try? Data(contentsOf: url) else { return nil }
-        return decode(data)
-    }
-
-    private static func loadBundled() -> TimetableDoc? {
-        guard let url = Bundle.main.url(forResource: "timetable", withExtension: "dat"),
-              let data = try? Data(contentsOf: url) else { return nil }
-        return decode(data)
-    }
-
-    /// 自带的数据是混淆过的（base64），导入的是明文 JSON，两种都能读
-    private static func decode(_ data: Data) -> TimetableDoc? {
-        if let doc = try? JSONDecoder().decode(TimetableDoc.self, from: data) {
-            return doc
+    /// 浏览其他周时不抢回当前位置；停留本周时随日期自然更新。
+    func refreshToday(_ now: Date = Date()) {
+        guard followsToday else { return }
+        if let current = doc.week(containing: now) {
+            week = current
+        } else {
+            week = now < (doc.startDate ?? now) ? 1 : totalWeeks
         }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        let compact = text.components(separatedBy: .whitespacesAndNewlines).joined()
-        guard let raw = Data(base64Encoded: compact) else { return nil }
-        return try? JSONDecoder().decode(TimetableDoc.self, from: raw)
     }
 
-    /// 从「文件」App 里选一个课表文件导进来
+    private func apply(_ document: TimetableDoc, imported: Bool) {
+        doc = document
+        isImported = imported
+        sourceName = imported ? "导入的课表" : "自带课表"
+        jumpToToday()
+    }
+
+    private static func importedURL() throws -> URL {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw TimetableError.invalid("无法访问本机文稿目录。")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("timetable.json")
+    }
+
+    private static func bundled() throws -> TimetableDoc {
+        guard let url = Bundle.main.url(forResource: "timetable", withExtension: "dat") else {
+            throw TimetableError.invalid("App 内缺少 timetable.dat 资源。")
+        }
+        return try read(url)
+    }
+
+    private static func read(_ url: URL) throws -> TimetableDoc {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= 10 * 1024 * 1024 else { throw TimetableError.invalid("课表文件不能超过 10 MB。") }
+        return try decode(Data(contentsOf: url))
+    }
+
+    /// 明文优先，只有结构解码失败才尝试去掉换行后的 base64。
+    private static func decode(_ data: Data) throws -> TimetableDoc {
+        guard data.count <= 10 * 1024 * 1024 else { throw TimetableError.invalid("课表文件不能超过 10 MB。") }
+        let decoder = JSONDecoder()
+        if let document = try? decoder.decode(TimetableDoc.self, from: data) {
+            return try document.validated()
+        }
+        if let text = String(data: data, encoding: .utf8),
+           let raw = Data(base64Encoded: text.components(separatedBy: .whitespacesAndNewlines).joined()),
+           let document = try? decoder.decode(TimetableDoc.self, from: raw) {
+            return try document.validated()
+        }
+        throw TimetableError.invalid("无法识别课表。请选择完整的 JSON 或 base64 DAT 文件，并检查字段名称与类型；hours 应为整数、null 或省略。")
+    }
+
     @discardableResult
     func importFile(at url: URL) -> Bool {
-        // 从别的地方选来的文件，要先申请访问权限
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-
         do {
-            let data = try Data(contentsOf: url)
-            guard let parsed = Self.decode(data) else {
-                message = "导入失败：这个文件里没有能识别的课表数据"
-                return false
-            }
-            if let destination = Self.importedURL {
-                try data.write(to: destination, options: .atomic)
-            }
-
-            doc = parsed
-            sourceName = "用导入的数据"
-            week = Self.weekForToday(in: parsed)
-            message = "导入成功，共 \(parsed.courses.count) 门课"
+            let parsed = try Self.read(url)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let saved = try encoder.encode(parsed)
+            // 原子写入成功后才替换内存数据，失败时保留原课表。
+            try saved.write(to: Self.importedURL(), options: .atomic)
+            apply(parsed, imported: true)
+            message = "导入成功，共 \(parsed.courses.count) 条课程安排。"
             return true
         } catch {
-            message = "导入失败：\(error.localizedDescription)"
+            message = "导入失败，原课表未更改。\n\(error.localizedDescription)"
             return false
         }
     }
 
-    /// 删掉导入的数据，用回 App 自带那份
     func resetToBundled() {
-        if let url = Self.importedURL {
-            try? FileManager.default.removeItem(at: url)
+        do {
+            let bundled = try Self.bundled()
+            let url = try Self.importedURL()
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            apply(bundled, imported: false)
+            message = "已恢复自带课表。"
+        } catch {
+            message = "恢复失败，原课表未更改。\n\(error.localizedDescription)"
         }
-        guard let bundled = Self.loadBundled() else {
-            message = "自带的数据也读不到了"
-            return
-        }
-        doc = bundled
-        sourceName = "用自带的数据"
-        week = Self.weekForToday(in: bundled)
-        message = "已恢复成自带的数据"
     }
 }

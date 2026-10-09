@@ -1,153 +1,52 @@
-# 课程表（iPhone App）
+# 课程表 · iPhone
 
-把学校教务系统里的课表搬到你 iPhone 上，不用每次开浏览器登录。
+SwiftUI 离线课程表，最低 iOS 17，无第三方依赖。
 
-- 主体是一张 **一周课表**：左边是节次，上面是周一到周日，课块按你学校的实际时间摆位置。
-- 顶部左右箭头翻周，点中间的「第几周」可以直接跳到任意一周。
-- 今天那一列会高亮；不在本周时会出现「回到本周」。
-- 点任意一格课，弹出这门课的详细信息：老师、地点、时间、节次、周次、班级、考核方式。
-- 底部可以切换 **五天 / 七天**；如果这周周末有课而你在五天模式，会提醒你。
-- 课表数据是**离线**存在手机里的：不联网也能看，也不用把学号密码给 App。
+## 使用
 
----
+- 顶部「今天」显示日期、教学周和当天课程数量，优先展示正在上课的课程，否则展示下一节。点「查看今日安排」查看当天全部课程。
+- 周课表保留六个大节，按 `startBlock` 与 `span` 定位。左侧节次固定，右侧可横向滑动；同一时段有多门课程时并排展示，不互相覆盖。
+- 左右箭头翻周，点周次标题直接跳转，点「本周」回到今天所在周。学期开始前显示第一周，结束后显示最后一周，并在今日区域说明状态。
+- 「五天 / 七天」选择会保存。五天模式下遇到周末课程，会显示可点的提醒。
+- 课程详情展示完整地点、教师、时间、节次、原始周次、班级、考核方式、总学时、课程编号和课程 ID。
+- 右上角进入「数据管理」，使用文件选择器导入 JSON 或 DAT，或恢复自带课表。文件最大 10 MB。
 
-## 一、文件都是干什么的
+## 数据与持久化
 
-```
+自带资源使用 `Bundle.main.url(forResource: "timetable", withExtension: "dat")` 读取。先解码明文 JSON；结构解码失败时再尝试移除空白后的 base64。base64 只是混淆，不是加密。
+
+导入文件使用系统的安全作用域访问权限。格式检查通过后，原子写入 App 文稿目录中的 `timetable.json`，成功写入才替换当前课表。重启优先读取导入副本；损坏时尝试回退自带数据并提示。恢复操作先读取自带资源，再移除导入副本。
+
+文件格式版本为 1，字段沿用项目说明第三节。`termStartDate` 为第一周周一，`day` 为 1 到 7，`startBlock` 为 0 到 5，`span` 不得跨出当天六个大节。按 `weeks` 过滤；`weeksText` 仅用于展示。`hours` 可为整数、null 或省略。课程 ID 必须唯一，`time` 为当天的 `HH:mm-HH:mm`。
+
+App 不联网、不登录、不收集账号信息。选择云盘文件时，文件提供方可能需要先下载文件；离线使用时请选择已经下载到本机的文件。
+
+## 文件结构
+
+```text
+project.yml
+.github/workflows/build-ipa.yml
+.gitignore
 CourseTable/
-├─ CourseTableApp.swift          程序入口，很短
-├─ Models/TimetableModels.swift  数据长什么样（课程、大节、学期）
-├─ Store/TimetableStore.swift   读数据、换周次、导入新数据
-├─ Views/
-│  ├─ TimetableView.swift        主界面：课表网格
-│  ├─ CourseBlockView.swift      一格课长什么样
-│  ├─ CourseDetailView.swift     点开一课之后的详情
-│  ├─ WeekPickerView.swift       选周次的弹窗
-│  └─ Theme.swift                颜色
-└─ Resources/
-   ├─ timetable.dat              ★ 你的课表数据（混淆过的，不是明文）
-   └─ Assets.xcassets/           图标
-
-project.yml                     给「云端打包」看的工程描述
-.github/workflows/build-ipa.yml  云端打包的流程
-tools/export-from-web.js         从学校网页导出课表数据的脚本
+  CourseTableApp.swift
+  Models/Timetable.swift
+  Store/TimetableStore.swift
+  Views/
+    ContentView.swift
+    Design.swift
+    WeekGrid.swift
+    DetailViews.swift
+  Resources/
+    timetable.dat
+    Assets.xcassets/
 ```
 
-想改外观，改 `Views/` 和 `Theme.swift`；想换数据，只动 `timetable.dat`（用 `tools/pack-data.js` 生成）。
+`Design.swift` 定义间距、浅深色配色、冲突课程布局和今日课程状态。`DetailViews.swift` 包含课程详情、今日安排、周次选择与数据管理。所有旧版 Swift 文件已由新实现替换或删除，旧数据导出、打包辅助脚本也已移除。
 
----
+## 打包与安装
 
-## 二、从改代码到装进手机
+保留仓库现有 `project.yml`、`.github/workflows/build-ipa.yml`、`.gitignore` 和整个 `CourseTable/Resources/`，不提交 `.xcodeproj` 或手写 `Info.plist`。
 
-### 第 1 步：把这份代码传到 GitHub
+推送到 `main` 后由原有 GitHub Actions 流程生成 Xcode 工程，并产出未签名的 `CourseTable.ipa`。也可以在 Actions 页面手动运行工作流，产物名为 `CourseTable-ipa`。安装到 iPhone 前仍需使用自己的 Apple ID 签名。
 
-先在 GitHub 网站上建一个**空仓库**（不要勾选自动生成 README），名字随便，比如 `timetable`。
-然后在这个文件夹里执行（把地址换成你自己的）：
-
-```bash
-git init
-git add .
-git commit -m "课程表 App 第一版"
-git branch -M main
-git remote add origin https://github.com/你的用户名/timetable.git
-git push -u origin main
-```
-
-> 建议用**公开仓库**：GitHub 免费账号跑苹果打包机器不扣时长。用私有仓库也能跑，但会消耗每月额度。
-
-### 第 2 步：让云端帮你打包
-
-代码推上去之后：
-
-1. 打开仓库页面 → 上方 **Actions** 选项卡。
-2. 左边选「打包成 iPhone 安装包」，右边点 **Run workflow** → 绿色按钮。
-3. 等两三分钟，出现绿勾就成功了。
-4. 点进那次运行，页面最下方 **Artifacts** 里下载 `CourseTable-ipa`，解开里面有 `CourseTable.ipa`。
-
-> 如果报错说找不到 `macos-15` 机器，把 `.github/workflows/build-ipa.yml` 里的
-> `runs-on: macos-15` 改成 `runs-on: macos-latest` 再跑一次。
-
-### 第 3 步：装到 iPhone 上
-
-打包出来的是**没签名**的安装包，还要用你自己的苹果账号签一次名才能装。两种做法：
-
-**做法 A：免费（不用花钱，但要每 7 天续一次）**
-
-1. 电脑上装 **iTunes** 和 **iCloud**，一定要去苹果官网下载安装版，**别用微软商店版**（商店版接口不一样，AltServer 连不上）。
-2. 装 **AltServer**（altstore.io 下载），运行后它会缩在右下角托盘里。
-3. iPhone 用数据线插在电脑上，手机上点「信任此电脑」。
-4. 点托盘里的 AltServer 图标 → **Install AltStore** → 选你的 iPhone → 输入你的 Apple ID 和密码。
-   - 这里只把苹果的「签名资格」用在你自己账号上，密码走的是苹果官方通道。
-5. 手机上会出现 **AltStore**。用数据线再连一次电脑，打开 AltStore → 右上角 **+** → 选刚才下载的 `CourseTable.ipa`。
-6. 第一次打开 App 会被拦，去 设置 → 通用 → VPN与设备管理 → 信任你的账号，就能开了。
-
-之后手机和电脑在同一个 WiFi 下，AltServer 会自动帮你续签，基本不用管。
-免费账号的限制：签名 7 天有效、同时最多 3 个自签 App、必须定期续。
-
-**做法 B：花钱省心（苹果开发者账号，一年 688 元）**
-
-有账号之后签名有效期是一年，不用每周续签，可以用 AltStore 装，也可以用其他签名工具装。适合确定要长期用的情况。
-
----
-
-## 三、下学期课表变了怎么办
-
-不用改代码，只换数据：
-
-1. 在浏览器里登录你学校的教务系统，打开平时看课表的那个页面。
-2. 按 F12 打开开发者工具 → 切到「控制台 / Console」。
-3. 把 `tools/export-from-web.js` 里的整段代码粘进去，回车。
-   会自动下载一个 `timetable.json`。
-4. 两个选择：
-   - **不重新打包**：把这个文件通过微信/网盘/AirDrop 发到手机，存进「文件」App，
-     在课表 App 右上角菜单里点「导入课表文件」选它。立刻就更新了。
-   - **重新打包**：把下载到的 `timetable.json` 放到仓库根目录，跑一句
-     `node tools/pack-data.js`，它会把内容混淆后写成 `CourseTable/Resources/timetable.dat`。
-     然后推上去再跑一次云端打包，重新装一次。
-
-> 学期换了要注意：导出脚本里有一行 `const firstMonday = '2026-09-07';`
-> 这是**第 1 周周一的日期**，用来算每一周对应的实际日期。换学期时改成新学期的第一周周一。
-
----
-
-## 四、已知的限制
-
-- **数据要手动更新一次**。App 不会自己登录学校系统去取数据（那样就得把学号密码存在手机上，
-  而且登录时可能会出现图片验证码）。如果你以后想要自动更新，可以再加。
-- 只做了主界面，**没有做主屏幕小组件**。
-- 一行只能显示一门课。如果你的课表里**同一个时间段撞了两门课**，只会画出一个（学校网页也是这个行为）。
-- 横竖屏都支持，但界面是照竖屏设计的。
-
----
-
-## 五、常见问题
-
-**打包报错找不到 bundle id？**
-改 `project.yml` 里的 `PRODUCT_BUNDLE_IDENTIFIER`，换成任何别的字符串（比如 `com.你的名字.coursetable2`）。
-
-**装完 App 打不开、图标是灰的？**
-说明签名过期或没信任证书。重新在 AltStore 里装一次，并去 设置 → 通用 → VPN与设备管理 里信任。
-
-**App 里显示「还没读到课表数据」？**
-说明自带的数据文件没被打进包里。检查 `CourseTable/Resources/timetable.json` 还在不在、格式有没有被改坏。
-
----
-
-## 六、关于隐私
-
-这个仓库里刻意不留能指向你本人的东西：
-
-- **学校网址、校名、学校代码**：没有写进任何文件。导出脚本是粘在「已经登录的课表页」里运行的，
-  它自己不需要知道学校地址。
-- **课表数据**（里面有老师名字、班级、教室）：放在 `timetable.dat` 里，经过混淆处理，
-  直接打开是一串乱码。
-  ⚠️ 说清楚：这只是**不让人一眼看懂，不是加密**，懂技术的人仍然能还原。真要藏住，就别把它传上去。
-- **App 的包名**用的是通用占位名，不含你的名字。
-- **Swift 代码里出现的课程、老师、教室都是编造的示例**，跟你的真实课表无关。
-
-数据文件的生成与自检：
-
-```bash
-node tools/pack-data.js          # 读根目录的 timetable.json，写出混淆后的 CourseTable/Resources/timetable.dat
-node tools/pack-data.js --check  # 只检查现有的 timetable.dat 能不能正常还原
-```
+本次重写不执行本地编译或测试，也不等待云端构建结果。
