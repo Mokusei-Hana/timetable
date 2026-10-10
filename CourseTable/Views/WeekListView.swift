@@ -1,9 +1,11 @@
 import SwiftUI
 
 struct WeekListView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snapshot: WeekPresentation
     let today: Date
-    let select: (Course) -> Void
+    let transitionNamespace: Namespace.ID
+    let select: (Course, String) -> Void
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
@@ -14,8 +16,11 @@ struct WeekListView: View {
                             .padding(.bottom, 8)
                     } else {
                         ForEach(day.lessons) { lesson in
-                            Button { select(lesson.course) } label: { LessonListRow(lesson: lesson) }
-                                .buttonStyle(.plain)
+                            let source = "list-\(snapshot.week)-\(lesson.id)"
+                            Button { select(lesson.course, source) } label: { LessonListRow(lesson: lesson) }
+                                .buttonStyle(CoursePressStyle())
+                                .courseZoomSource(source, in: transitionNamespace)
+                                .transition(.opacity)
                         }
                     }
                 } header: {
@@ -31,7 +36,10 @@ struct WeekListView: View {
                     }.padding(.top, 8)
                 }
             }
-        }.padding(.bottom, 16)
+        }
+        .padding(.bottom, 16)
+        .animation(reduceMotion ? nil : InterfaceMotion.content, value: snapshot.week)
+        .respectMotionPreference()
     }
 }
 
@@ -67,6 +75,7 @@ struct LessonListRow: View {
 }
 
 struct ConflictCoursesView: View {
+    @Namespace private var courseTransitions
     let cluster: CourseCluster
     let week: Int
     var body: some View {
@@ -77,8 +86,12 @@ struct ConflictCoursesView: View {
                 ForEach(cluster.lessons) { lesson in
                     NavigationLink {
                         CourseDetailView(course: lesson.course, week: week)
-                    } label: { LessonListRow(lesson: lesson) }
-                        .buttonStyle(.plain)
+                            .courseZoomDestination(lesson.id, in: courseTransitions)
+                    } label: {
+                        LessonListRow(lesson: lesson)
+                            .courseZoomSource(lesson.id, in: courseTransitions)
+                    }
+                    .buttonStyle(CoursePressStyle())
                 }
             }.padding(16)
         }

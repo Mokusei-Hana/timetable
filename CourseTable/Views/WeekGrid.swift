@@ -29,7 +29,8 @@ struct WeekGrid: View {
     let today: Date
     let viewport: CGSize
     let scrolls: Bool
-    let select: (CourseCluster) -> Void
+    let transitionNamespace: Namespace.ID
+    let select: (CourseCluster, String) -> Void
 
     var body: some View {
         let metrics = GridMetrics(size: viewport, rowCount: snapshot.blocks.count, fontSize: fontSize)
@@ -102,7 +103,8 @@ struct WeekGrid: View {
         let showLocation = !cluster.isConflict && width >= cardFont * 3.5 && height >= cardFont * 7.5
         let reserved = showLocation ? cardFont * 2.4 : (cluster.isConflict ? cardFont * 1.5 : 0)
         let lines = max(1, min(6, Int((height - padding * 2 - reserved) / (cardFont * 1.3))))
-        return Button { select(cluster) } label: {
+        let source = "grid-\(snapshot.week)-\(cluster.id)"
+        return Button { select(cluster, source) } label: {
             VStack(alignment: .leading, spacing: 2) {
                 if cluster.isConflict {
                     HStack(spacing: 2) {
@@ -126,7 +128,8 @@ struct WeekGrid: View {
             .clipped()
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CoursePressStyle())
+        .courseZoomSource(source, in: transitionNamespace)
         .accessibilityLabel(cluster.isConflict
             ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
             : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
