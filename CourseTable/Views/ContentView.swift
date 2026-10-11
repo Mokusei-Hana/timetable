@@ -20,9 +20,11 @@ private enum SheetRoute: Identifiable {
 }
 
 private struct ExpandedCourse {
-    let course: Course
+    let sessionID = UUID()
+    let cluster: CourseCluster
     let week: Int
     let sourceID: String
+    let fontSize: CGFloat
 }
 
 struct ContentView: View {
@@ -34,11 +36,10 @@ struct ContentView: View {
     @AppStorage("scheduleViewMode") private var mode: ScheduleViewMode = .cards
     @State private var route: SheetRoute?
     @State private var expandedCourse: ExpandedCourse?
-    @State private var expansionTransitionID: UUID?
-    @AccessibilityFocusState private var detailCloseFocused: Bool
+    @AccessibilityFocusState private var focusedSourceID: String?
     @Namespace private var courseTransitions
 
-    private var blocksBackground: Bool { expandedCourse != nil || expansionTransitionID != nil }
+    private var blocksBackground: Bool { expandedCourse != nil }
 
     var body: some View {
         ZStack {
@@ -47,30 +48,28 @@ struct ContentView: View {
                 .accessibilityHidden(blocksBackground)
                 // 源卡片保留在非 Lazy 网格中；展开期间固定滚动位置。
                 .scrollDisabled(blocksBackground)
-            if let selection = expandedCourse {
-                Color.black.opacity(0.16)
-                    .ignoresSafeArea()
-                    .accessibilityHidden(true)
-                    .transition(.opacity)
-                NavigationStack {
-                    CourseDetailView(course: selection.course, week: selection.week)
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("完成") { closeCourse() }
-                                    .disabled(expansionTransitionID != nil)
-                                    .accessibilityFocused($detailCloseFocused)
-                            }
+        }
+        .overlayPreferenceValue(CourseCardAnchors.self) { anchors in
+            GeometryReader { geometry in
+                if let selection = expandedCourse {
+                    CourseCardExpansion(
+                        cluster: selection.cluster, week: selection.week, fontSize: selection.fontSize,
+                        sourceFrame: anchors[selection.sourceID].map { geometry[$0] },
+                        sourceViewport: anchors[CourseCardAnchors.viewportID].map { geometry[$0] },
+                        viewport: geometry.size, safeArea: geometry.safeAreaInsets
+                    ) { fallback in
+                        // 已移除视图的动画回调不能关闭后来打开的同一门课程。
+                        if expandedCourse?.sessionID == selection.sessionID {
+                            closeCourse(animated: fallback)
+                            if !fallback { focusedSourceID = selection.sourceID }
                         }
+                    }
+                    .id(selection.sessionID)
+                    .transition(.opacity)
+                    .zIndex(1)
                 }
-                .background(Design.background)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .courseExpansionGeometry(selection.sourceID, in: courseTransitions)
-                .padding(12)
-                .transition(.opacity)
-                .zIndex(1)
-                .accessibilityAddTraits(.isModal)
-                .accessibilityAction(.escape) { closeCourse() }
             }
+            .allowsHitTesting(blocksBackground)
         }
         .tint(Design.accent(dark: colorScheme == .dark))
         .accentColor(Design.accent(dark: colorScheme == .dark))
@@ -78,6 +77,7 @@ struct ContentView: View {
         .onChange(of: store.week) { _, _ in closeCourse(animated: false) }
         .onChange(of: mode) { _, _ in closeCourse(animated: false) }
         .onChange(of: dynamicType) { _, _ in closeCourse(animated: false) }
+        .onChange(of: route?.id) { _, id in if id != nil { closeCourse(animated: false) } }
         // 数据替换、编辑或删除时不再使用旧课程或旧位置；不触发课表刷新。
         .onReceive(store.$doc.dropFirst()) { _ in closeCourse(animated: false) }
         .onChange(of: scenePhase) { _, phase in
@@ -152,38 +152,24 @@ struct ContentView: View {
         }
     }
 
-    private func openCourse(_ course: Course, sourceID: String) {
+    private func openCourse(_ cluster: CourseCluster, sourceID: String, fontSize: CGFloat) {
         guard !blocksBackground, route == nil else { return }
-        setExpandedCourse(ExpandedCourse(course: course, week: store.week, sourceID: sourceID))
+        // Overlay 首帧复制真实源卡片；动画在测得详情的自然尺寸后开始。
+        focusedSourceID = nil
+        expandedCourse = ExpandedCourse(cluster: cluster, week: store.week, sourceID: sourceID, fontSize: fontSize)
     }
 
-    private func closeCourse(animated: Bool = true) {
+    private func closeCourse(animated: Bool = false) {
         guard blocksBackground else { return }
-        if !animated {
+        focusedSourceID = nil
+        if animated && !reduceMotion {
+            withAnimation(.easeOut(duration: 0.14)) { expandedCourse = nil }
+        } else {
             // 源卡片可能已随周次、模式或数据改变而消失，避免匹配到新布局。
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 expandedCourse = nil
-                expansionTransitionID = nil
-                detailCloseFocused = false
-            }
-        } else {
-            guard expandedCourse != nil, expansionTransitionID == nil else { return }
-            setExpandedCourse(nil)
-        }
-    }
-
-    private func setExpandedCourse(_ selection: ExpandedCourse?) {
-        let transitionID = UUID()
-        expansionTransitionID = transitionID
-        withAnimation(reduceMotion ? nil : InterfaceMotion.expansion, completionCriteria: .removed) {
-            expandedCourse = selection
-        } completion: {
-            // 旧动画完成回调不能解除后续动画的交互锁。
-            if expansionTransitionID == transitionID {
-                expansionTransitionID = nil
-                detailCloseFocused = expandedCourse != nil
             }
         }
     }
@@ -227,11 +213,12 @@ struct ContentView: View {
         ZStack(alignment: .top) {
             if mode == .cards {
                 WeekGrid(snapshot: store.presentation, today: store.todaySchedule.date,
-                         viewport: size, scrolls: scrolls, transitionNamespace: courseTransitions,
-                         expandedSourceID: expandedCourse?.sourceID) { cluster, source in
+                         viewport: size, scrolls: scrolls,
+                         expandedSourceID: expandedCourse?.sourceID,
+                         sourceFocus: $focusedSourceID) { cluster, source, fontSize in
                     guard !blocksBackground, route == nil else { return }
                     if cluster.isConflict { route = .conflict(cluster, store.week) }
-                    else { openCourse(cluster.lessons[0].course, sourceID: source) }
+                    else { openCourse(cluster, sourceID: source, fontSize: fontSize) }
                 }.transition(.opacity)
             } else {
                 if scrolls {

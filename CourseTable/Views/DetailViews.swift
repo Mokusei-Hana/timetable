@@ -1,6 +1,74 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// 网格专用的简明摘要；列表与其他入口继续使用完整 CourseDetailView。
+struct CompactCourseCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicType
+    let lesson: LessonPresentation
+    let week: Int
+    let close: () -> Void
+    let closeFocus: AccessibilityFocusState<Bool>.Binding
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            information.fixedSize(horizontal: false, vertical: true)
+            ScrollView(.vertical) { information }
+                .scrollBounceBehavior(.basedOnSize)
+        }
+        .padding(16)
+        .overlay(alignment: .topTrailing) {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Design.surface, in: Circle())
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭课程信息")
+            .accessibilityFocused(closeFocus)
+            .padding(6)
+        }
+        .textSelection(.enabled)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, close)
+    }
+
+    private var information: some View {
+        let course = lesson.course
+        let ink = Design.ink(lesson.colorIndex, dark: colorScheme == .dark)
+        return VStack(alignment: .leading, spacing: 9) {
+            Text(course.name)
+                .font(.headline).foregroundStyle(ink)
+                .lineLimit(dynamicType.isAccessibilitySize ? 5 : 3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: 28, alignment: .leading)
+                .padding(.trailing, 36)
+            Text("\(TimetableDoc.dayName(course.day)) · \(lesson.sections)")
+                .font(.caption.weight(.medium)).foregroundStyle(ink)
+            Label(course.time, systemImage: "clock")
+                .monospacedDigit()
+            Label(course.location.isEmpty ? "地点未提供" : course.location, systemImage: "mappin.and.ellipse")
+                .lineLimit(dynamicType.isAccessibilitySize ? 4 : 2)
+            Label(course.teacher.isEmpty ? "教师未提供" : course.teacher, systemImage: "person")
+                .lineLimit(2)
+            Label("第 \(week) 周 · \(course.weeksText.isEmpty ? "周次未提供" : course.weeksText)", systemImage: "calendar")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .font(.subheadline)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            // 测量实际信息内容，而非可能撑到上限的外层弹性 frame。
+            GeometryReader { geometry in
+                Color.clear.preference(key: CourseCardSize.self,
+                                       value: CGSize(width: geometry.size.width + 32, height: geometry.size.height + 32))
+            }
+        }
+    }
+}
+
 struct CourseDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var store: TimetableStore

@@ -6,6 +6,8 @@ enum InterfaceMotion {
     static let expansion = Animation.spring(response: 0.34, dampingFraction: 0.94)
     static let content = Animation.easeInOut(duration: 0.18)
     static let press = Animation.easeOut(duration: 0.12)
+    static let courseOpen = Animation.spring(response: 0.40, dampingFraction: 0.90)
+    static let courseClose = Animation.spring(response: 0.34, dampingFraction: 0.92)
 }
 
 /// 内容卡片保持不透明，按压只改变显示变换，不重新测量布局。
@@ -110,18 +112,6 @@ private struct CourseZoomSource: ViewModifier {
     }
 }
 
-/// 仅用于同一视图层级中的卡片与 Overlay；不跨系统 Sheet 匹配。
-private struct CourseExpansionGeometry: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let id: String
-    let namespace: Namespace.ID
-
-    func body(content: Content) -> some View {
-        if reduceMotion { content }
-        else { content.matchedGeometryEffect(id: id, in: namespace) }
-    }
-}
-
 private struct CourseZoomDestination: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let id: String?
@@ -167,9 +157,192 @@ extension View {
         modifier(CourseZoomDestination(id: id, namespace: namespace))
     }
 
-    func courseExpansionGeometry(_ id: String, in namespace: Namespace.ID) -> some View {
-        modifier(CourseExpansionGeometry(id: id, namespace: namespace))
+    func respectMotionPreference() -> some View { modifier(MotionAccessibility()) }
+}
+
+/// 锚点随 ScrollView 正确转换坐标，不把每次滚动的几何值写回课表状态。
+struct CourseCardAnchors: PreferenceKey {
+    static let viewportID = "course-grid-viewport"
+    static var defaultValue: [String: Anchor<CGRect>] { [:] }
+
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+struct CourseCardSize: PreferenceKey {
+    static var defaultValue: CGSize { .zero }
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+/// 用容器的同一弹簧进度协调文字：原内容先淡出，正文在空间足够后才显现。
+private struct CourseContentVisibility: AnimatableModifier {
+    var progress: Double
+    let source: Bool
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
     }
 
-    func respectMotionPreference() -> some View { modifier(MotionAccessibility()) }
+    func body(content: Content) -> some View {
+        let opacity = source ? 1 - min(1, max(0, progress / 0.28)) : min(1, max(0, (progress - 0.80) / 0.20))
+        return content.opacity(opacity)
+    }
+}
+
+/// 一个持续存在的容器直接插值 frame / position / 圆角；文字不参与几何缩放。
+struct CourseCardExpansion: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicType
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let cluster: CourseCluster
+    let week: Int
+    let fontSize: CGFloat
+    let sourceFrame: CGRect?
+    let sourceViewport: CGRect?
+    let viewport: CGSize
+    let safeArea: EdgeInsets
+    let dismiss: (Bool) -> Void
+    @State private var collapsedFrame: CGRect
+    @State private var collapsedViewport: CGRect
+    @State private var detailFrame: CGRect?
+    @State private var expanded = false
+    @State private var closing = false
+    @State private var transitionID = UUID()
+    @AccessibilityFocusState private var closeFocused: Bool
+
+    init(cluster: CourseCluster, week: Int, fontSize: CGFloat, sourceFrame: CGRect?,
+         sourceViewport: CGRect?, viewport: CGSize, safeArea: EdgeInsets, dismiss: @escaping (Bool) -> Void) {
+        self.cluster = cluster
+        self.week = week
+        self.fontSize = fontSize
+        self.sourceFrame = sourceFrame
+        self.sourceViewport = sourceViewport
+        self.viewport = viewport
+        self.safeArea = safeArea
+        self.dismiss = dismiss
+        _collapsedFrame = State(initialValue: sourceFrame ?? .zero)
+        let bounds = Self.safeBounds(viewport, insets: safeArea)
+        let visible = (sourceViewport ?? bounds).intersection(bounds)
+        _collapsedViewport = State(initialValue: visible.isNull ? .zero : visible)
+    }
+
+    private static func safeBounds(_ size: CGSize, insets: EdgeInsets) -> CGRect {
+        CGRect(x: insets.leading, y: insets.top,
+               width: max(0, size.width - insets.leading - insets.trailing),
+               height: max(0, size.height - insets.top - insets.bottom))
+    }
+
+    private var availableBounds: CGRect { Self.safeBounds(viewport, insets: safeArea) }
+    private var cardWidth: CGFloat { max(1, min(availableBounds.width * 0.88, availableBounds.width - 24)) }
+    private var heightLimit: CGFloat { max(1, min(dynamicType.isAccessibilitySize ? 360 : 300, availableBounds.height - 24)) }
+
+    private var targetFrame: CGRect {
+        detailFrame ?? fittedFrame(height: 1)
+    }
+
+    private func fittedFrame(height: CGFloat) -> CGRect {
+        let height = min(height, heightLimit)
+        let bounds = availableBounds
+        let x = max(bounds.minX + 12, min(collapsedFrame.midX - cardWidth / 2, bounds.maxX - cardWidth - 12))
+        let y = max(bounds.minY + 12, min(collapsedFrame.midY - height / 2, bounds.maxY - height - 12))
+        return CGRect(x: x, y: y, width: cardWidth, height: height)
+    }
+
+    private var currentFrame: CGRect { expanded ? targetFrame : collapsedFrame }
+    private var radius: CGFloat { expanded ? 20 : 8 }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(expanded ? 0.14 : 0)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { close() }
+                .accessibilityHidden(true)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: expanded)
+            ZStack(alignment: .topLeading) {
+                surface(Design.fill(cluster.lessons[0].colorIndex, dark: colorScheme == .dark))
+                    .shadow(color: .black.opacity(expanded ? (colorScheme == .dark ? 0.22 : 0.12) : 0),
+                            radius: expanded ? 12 : 0, x: 0, y: expanded ? 4 : 0)
+                    .allowsHitTesting(false)
+                GridCourseCardContent(cluster: cluster, width: collapsedFrame.width,
+                                      height: collapsedFrame.height, fontSize: fontSize)
+                    .frame(width: collapsedFrame.width, height: collapsedFrame.height)
+                    .position(x: currentFrame.minX + collapsedFrame.width / 2,
+                              y: currentFrame.minY + collapsedFrame.height / 2)
+                    .modifier(CourseContentVisibility(progress: expanded ? 1 : 0, source: true))
+                    .mask { surface(.white) }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                CompactCourseCard(lesson: cluster.lessons[0], week: week, close: close, closeFocus: $closeFocused)
+                    .frame(width: cardWidth)
+                    .frame(maxHeight: heightLimit)
+                    .frame(height: detailFrame?.height)
+                    .contentShape(Rectangle())
+                    // 内容始终按最终宽度排版；即使容器还在收缩也不压缩字形。
+                    .position(x: targetFrame.midX, y: targetFrame.midY)
+                    .transaction { $0.animation = nil; $0.disablesAnimations = true }
+                    .modifier(CourseContentVisibility(progress: expanded ? 1 : 0, source: false))
+                    .mask { surface(.white) }
+                    .allowsHitTesting(expanded && !closing)
+                    .accessibilityHidden(!expanded || closing)
+            }
+            .mask {
+                // 屏幕边缘的部分卡片首尾沿用 ScrollView 的裁切范围。
+                let bounds = expanded ? availableBounds : collapsedViewport
+                Rectangle().frame(width: bounds.width, height: bounds.height)
+                    .position(x: bounds.midX, y: bounds.midY)
+            }
+        }
+        .onPreferenceChange(CourseCardSize.self) { size in
+            guard detailFrame == nil, size.height > 0, !closing else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            // 只记录一次自然尺寸与目标位置，收起时更新源坐标不会移动正文。
+            withTransaction(transaction) { detailFrame = fittedFrame(height: size.height) }
+            let token = transitionID
+            withAnimation(reduceMotion ? nil : InterfaceMotion.courseOpen, completionCriteria: .removed) {
+                expanded = true
+            } completion: {
+                if transitionID == token && !closing { closeFocused = true }
+            }
+        }
+        .onAppear { if sourceFrame == nil { dismiss(true) } }
+        .onChange(of: viewport) { _, _ in dismiss(true) }
+        .onChange(of: safeArea) { _, _ in dismiss(true) }
+        .onDisappear { transitionID = UUID() }
+    }
+
+    private func surface(_ color: Color) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous).fill(color)
+            .frame(width: currentFrame.width, height: currentFrame.height)
+            .position(x: currentFrame.midX, y: currentFrame.midY)
+    }
+
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        closeFocused = false
+        let token = UUID()
+        transitionID = token
+        let bounds = availableBounds
+        let visible = (sourceViewport ?? bounds).intersection(bounds)
+        guard let sourceFrame, !sourceFrame.isEmpty, sourceFrame.intersects(visible) else {
+            // 源卡片不可见时只淡出，不将容器瞬移到旧坐标。
+            dismiss(true)
+            return
+        }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            collapsedFrame = sourceFrame
+            collapsedViewport = visible
+        }
+        // 可在展开中直接反向；同一个容器从当前呈现位置重新定向。
+        withAnimation(reduceMotion ? nil : InterfaceMotion.courseClose, completionCriteria: .removed) {
+            expanded = false
+        } completion: {
+            if transitionID == token { dismiss(false) }
+        }
+    }
 }

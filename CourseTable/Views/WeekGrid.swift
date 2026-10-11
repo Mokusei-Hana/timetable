@@ -29,9 +29,9 @@ struct WeekGrid: View {
     let today: Date
     let viewport: CGSize
     let scrolls: Bool
-    let transitionNamespace: Namespace.ID
     let expandedSourceID: String?
-    let select: (CourseCluster, String) -> Void
+    let sourceFocus: AccessibilityFocusState<String?>.Binding
+    let select: (CourseCluster, String, CGFloat) -> Void
 
     var body: some View {
         let metrics = GridMetrics(size: viewport, rowCount: snapshot.blocks.count, fontSize: fontSize)
@@ -42,6 +42,9 @@ struct WeekGrid: View {
             } else {
                 grid(metrics)
             }
+        }
+        .transformAnchorPreference(key: CourseCardAnchors.self, value: .bounds) { anchors, bounds in
+            anchors[CourseCardAnchors.viewportID] = bounds
         }
     }
 
@@ -98,50 +101,60 @@ struct WeekGrid: View {
     private func clusterCard(_ cluster: CourseCluster, width: CGFloat, height: CGFloat) -> some View {
         let lesson = cluster.lessons[0]
         let dark = colorScheme == .dark
+        let source = "grid-\(snapshot.week)-\(lesson.course.day)-\(cluster.startBlock)-\(cluster.id)"
+        return Button { select(cluster, source, fontSize) } label: {
+            GridCourseCardContent(cluster: cluster, width: width, height: height, fontSize: fontSize)
+                .background(Design.fill(lesson.colorIndex, dark: dark),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .clipped()
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(CoursePressStyle())
+        // 保留布局与锚点；同一时刻只由 Overlay 绘制被选中的卡片。
+        .opacity(expandedSourceID == source ? 0 : 1)
+        .anchorPreference(key: CourseCardAnchors.self, value: .bounds) { [source: $0] }
+        .accessibilityFocused(sourceFocus, equals: source)
+        .accessibilityLabel(cluster.isConflict
+            ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
+            : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
+        .accessibilityHint("窄卡片省略的信息可在详情或列表中完整查看")
+    }
+}
+
+/// 网格与形变首尾共用同一份内容；只移动文本，不对它应用几何缩放。
+struct GridCourseCardContent: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let cluster: CourseCluster
+    let width: CGFloat
+    let height: CGFloat
+    let fontSize: CGFloat
+
+    var body: some View {
+        let lesson = cluster.lessons[0]
         let padding: CGFloat = width < 44 ? 3 : 5
         // 七列总览的字号下限为 12；辅助功能大字号超出单列时，以列宽为上限，列表保留完整字号。
         let cardFont = min(fontSize, max(12, width - padding * 2))
         let showLocation = !cluster.isConflict && width >= cardFont * 3.5 && height >= cardFont * 7.5
         let reserved = showLocation ? cardFont * 2.4 : (cluster.isConflict ? cardFont * 1.5 : 0)
         let lines = max(1, min(6, Int((height - padding * 2 - reserved) / (cardFont * 1.3))))
-        let source = "grid-\(snapshot.week)-\(lesson.course.day)-\(cluster.startBlock)-\(cluster.id)"
-        return Group {
-            if expandedSourceID == source {
-                // 保留原网格占位；匹配源与详情交替存在，避免两个活动源竞争。
-                Color.clear.accessibilityHidden(true)
-            } else {
-                Button { select(cluster, source) } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if cluster.isConflict {
-                            HStack(spacing: 2) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                Text("\(cluster.lessons.count)").lineLimit(1)
-                            }.font(.system(size: cardFont, weight: .bold))
-                        }
-                        Text(lesson.course.name)
-                            .font(.system(size: cardFont, weight: .semibold))
-                            .lineLimit(lines).truncationMode(.tail)
-                        Spacer(minLength: 0)
-                        if showLocation {
-                            Text(lesson.shortLocation).font(.system(size: cardFont)).lineLimit(2)
-                        }
-                    }
-                    .multilineTextAlignment(.leading)
-                    .padding(padding)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .foregroundStyle(Design.ink(lesson.colorIndex, dark: dark))
-                    .background(Design.fill(lesson.colorIndex, dark: dark), in: RoundedRectangle(cornerRadius: 8))
-                    .clipped()
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(CoursePressStyle())
-                .courseExpansionGeometry(source, in: transitionNamespace)
-                .transition(.opacity)
-                .accessibilityLabel(cluster.isConflict
-                    ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
-                    : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
-                .accessibilityHint("窄卡片省略的信息可在详情或列表中完整查看")
+        return VStack(alignment: .leading, spacing: 2) {
+            if cluster.isConflict {
+                HStack(spacing: 2) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("\(cluster.lessons.count)").lineLimit(1)
+                }.font(.system(size: cardFont, weight: .bold))
+            }
+            Text(lesson.course.name)
+                .font(.system(size: cardFont, weight: .semibold))
+                .lineLimit(lines).truncationMode(.tail)
+            Spacer(minLength: 0)
+            if showLocation {
+                Text(lesson.shortLocation).font(.system(size: cardFont)).lineLimit(2)
             }
         }
+        .multilineTextAlignment(.leading)
+        .padding(padding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .foregroundStyle(Design.ink(lesson.colorIndex, dark: colorScheme == .dark))
     }
 }
