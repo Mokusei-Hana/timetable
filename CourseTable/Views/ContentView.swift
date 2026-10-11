@@ -2,7 +2,7 @@ import SwiftUI
 
 private enum SheetRoute: Identifiable {
     case settings, weeks, today
-    case course(Course, Int, String)
+    case course(Course, Int, String?)
     case conflict(CourseCluster, Int)
     var id: String {
         switch self {
@@ -103,7 +103,8 @@ struct ContentView: View {
                             cluster: selection.cluster, week: selection.week, fontSize: selection.fontSize,
                             sourceFrame: anchors[selection.sourceID].map { geometry[$0] },
                             sourceViewport: anchors[CourseCardAnchors.viewportID].map { geometry[$0] },
-                            viewport: geometry.size, safeArea: geometry.safeAreaInsets
+                            viewport: geometry.size, safeArea: geometry.safeAreaInsets,
+                            showDetails: { showFullCourse(selection) }
                         ) { fallback in
                             // 已移除视图的动画回调不能关闭后来打开的同一门课程。
                             if expandedCourse?.sessionID == selection.sessionID {
@@ -173,6 +174,13 @@ struct ContentView: View {
                 expandedCourse = nil
             }
         }
+    }
+
+    private func showFullCourse(_ selection: ExpandedCourse) {
+        guard expandedCourse?.sessionID == selection.sessionID, route == nil else { return }
+        closeCourse(animated: false)
+        // 浮卡已淡出；复用系统 Sheet，不匹配不存在的网格 zoom source。
+        route = .course(selection.cluster.lessons[0].course, selection.week, nil)
     }
 
     private var header: some View {

@@ -202,6 +202,7 @@ struct CourseCardExpansion: View {
     let sourceViewport: CGRect?
     let viewport: CGSize
     let safeArea: EdgeInsets
+    let showDetails: () -> Void
     let dismiss: (Bool) -> Void
     @State private var collapsedFrame: CGRect
     @State private var collapsedViewport: CGRect
@@ -212,7 +213,8 @@ struct CourseCardExpansion: View {
     @AccessibilityFocusState private var closeFocused: Bool
 
     init(cluster: CourseCluster, week: Int, fontSize: CGFloat, sourceFrame: CGRect?,
-         sourceViewport: CGRect?, viewport: CGSize, safeArea: EdgeInsets, dismiss: @escaping (Bool) -> Void) {
+         sourceViewport: CGRect?, viewport: CGSize, safeArea: EdgeInsets,
+         showDetails: @escaping () -> Void, dismiss: @escaping (Bool) -> Void) {
         self.cluster = cluster
         self.week = week
         self.fontSize = fontSize
@@ -220,6 +222,7 @@ struct CourseCardExpansion: View {
         self.sourceViewport = sourceViewport
         self.viewport = viewport
         self.safeArea = safeArea
+        self.showDetails = showDetails
         self.dismiss = dismiss
         let bounds = Self.safeBounds(viewport, insets: safeArea)
         let visible = (sourceViewport ?? bounds).intersection(bounds)
@@ -258,16 +261,12 @@ struct CourseCardExpansion: View {
     private func fittedFrame(height: CGFloat) -> CGRect {
         let height = min(height, heightLimit)
         let bounds = availableBounds
-        let hasSource = sourceFrame.map { Self.isValidFrame($0) } ?? false
-        let center = hasSource ? CGPoint(x: collapsedFrame.midX, y: collapsedFrame.midY)
-            : CGPoint(x: bounds.midX, y: bounds.midY)
-        let x = max(bounds.minX + 12, min(center.x - cardWidth / 2, bounds.maxX - cardWidth - 12))
-        let y = max(bounds.minY + 12, min(center.y - height / 2, bounds.maxY - height - 12))
-        return CGRect(x: x, y: y, width: cardWidth, height: height)
+        return CGRect(x: bounds.midX - cardWidth / 2, y: bounds.midY - height / 2,
+                      width: cardWidth, height: height)
     }
 
     private var currentFrame: CGRect { expanded ? targetFrame : collapsedFrame }
-    private var radius: CGFloat { expanded ? 20 : 8 }
+    private var radius: CGFloat { expanded ? 24 : 8 }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -291,10 +290,11 @@ struct CourseCardExpansion: View {
                     .mask { surface(.white) }
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
-                CompactCourseCard(lesson: cluster.lessons[0], week: week, close: close, closeFocus: $closeFocused)
+                CompactCourseCard(lesson: cluster.lessons[0], week: week, showDetails: openDetails,
+                                  close: close, closeFocus: $closeFocused)
                     .frame(width: cardWidth)
                     .frame(maxHeight: heightLimit)
-                    .frame(height: targetFrame.height)
+                    .frame(height: detailFrame?.height)
                     .contentShape(Rectangle())
                     // 内容始终按最终宽度排版；即使容器还在收缩也不压缩字形。
                     .position(x: targetFrame.midX, y: targetFrame.midY)
@@ -311,6 +311,8 @@ struct CourseCardExpansion: View {
                     .position(x: bounds.midX, y: bounds.midY)
             }
         }
+        // 普通关闭会令 expanded 变为 false；进入完整详情则原地淡出，不先缩回网格。
+        .opacity(closing && expanded ? 0 : 1)
         .onPreferenceChange(CourseCardSize.self) { size in
             guard detailFrame == nil, !expanded, !closing,
                   size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
@@ -318,8 +320,14 @@ struct CourseCardExpansion: View {
             transaction.disablesAnimations = true
             // 首帧测量仅优化高度；未返回或无效时使用紧凑的默认高度，展开后不再跳动。
             withTransaction(transaction) { detailFrame = fittedFrame(height: size.height) }
+            open()
         }
-        .onAppear(perform: open)
+        .task {
+            // 先让首轮布局提交测量；不依赖回调成功，也不使用定时延迟。
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            open()
+        }
         .onChange(of: viewport) { old, _ in
             // 初次布局从零尺寸变为有效尺寸时仍应正常显示。
             if old.width > 0 && old.height > 0 { dismiss(true) }
@@ -336,6 +344,11 @@ struct CourseCardExpansion: View {
 
     private func open() {
         guard !expanded, !closing else { return }
+        if detailFrame == nil {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { detailFrame = fittedFrame(height: 260) }
+        }
         let token = transitionID
         withAnimation(reduceMotion ? nil : InterfaceMotion.courseOpen, completionCriteria: .removed) {
             expanded = true
@@ -346,7 +359,6 @@ struct CourseCardExpansion: View {
 
     private func close() {
         guard !closing else { return }
-        closing = true
         closeFocused = false
         let token = UUID()
         transitionID = token
@@ -365,9 +377,22 @@ struct CourseCardExpansion: View {
         }
         // 可在展开中直接反向；同一个容器从当前呈现位置重新定向。
         withAnimation(reduceMotion ? nil : InterfaceMotion.courseClose, completionCriteria: .removed) {
+            closing = true
             expanded = false
         } completion: {
             if transitionID == token { dismiss(false) }
+        }
+    }
+
+    private func openDetails() {
+        guard !closing else { return }
+        closeFocused = false
+        let token = UUID()
+        transitionID = token
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.14), completionCriteria: .removed) {
+            closing = true
+        } completion: {
+            if transitionID == token { showDetails() }
         }
     }
 }

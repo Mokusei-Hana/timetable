@@ -5,66 +5,87 @@ import UniformTypeIdentifiers
 struct CompactCourseCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicType
+    @ScaledMetric(relativeTo: .subheadline) private var symbolWidth: CGFloat = 18
     let lesson: LessonPresentation
     let week: Int
+    let showDetails: () -> Void
     let close: () -> Void
     let closeFocus: AccessibilityFocusState<Bool>.Binding
 
+    private var ink: Color { Design.ink(lesson.colorIndex, dark: colorScheme == .dark) }
+
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            information.fixedSize(horizontal: false, vertical: true)
-            ScrollView(.vertical) { information }
-                .scrollBounceBehavior(.basedOnSize)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(lesson.course.name)
+                    .font(.headline).foregroundStyle(ink)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                actions.fixedSize()
+            }
+            ViewThatFits(in: .vertical) {
+                information.fixedSize(horizontal: false, vertical: true)
+                ScrollView(.vertical) { information }
+                    .scrollBounceBehavior(.basedOnSize)
+            }
         }
         .padding(16)
-        .overlay(alignment: .topTrailing) {
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(Design.surface, in: Circle())
-                    .frame(width: 44, height: 44)
+        .background {
+            // 测量最终选中的布局及标题操作区，避免 ViewThatFits 内部候选视图的测量竞争。
+            GeometryReader { geometry in
+                Color.clear.preference(key: CourseCardSize.self, value: geometry.size)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭课程信息")
-            .accessibilityFocused(closeFocus)
-            .padding(6)
         }
         .textSelection(.enabled)
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape, close)
     }
 
+    private var actions: some View {
+        HStack(spacing: 0) {
+            Button(action: showDetails) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("查看完整课程详情")
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("关闭课程信息")
+            .accessibilityFocused(closeFocus)
+        }
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ink)
+        .buttonStyle(.plain)
+        .background(ink.opacity(colorScheme == .dark ? 0.12 : 0.07), in: Capsule(style: .continuous))
+    }
+
     private var information: some View {
         let course = lesson.course
-        let ink = Design.ink(lesson.colorIndex, dark: colorScheme == .dark)
-        return VStack(alignment: .leading, spacing: 9) {
-            Text(course.name)
-                .font(.headline).foregroundStyle(ink)
-                .lineLimit(dynamicType.isAccessibilitySize ? 5 : 3)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(minHeight: 28, alignment: .leading)
-                .padding(.trailing, 36)
+        return VStack(alignment: .leading, spacing: 8) {
             Text("\(TimetableDoc.dayName(course.day)) · \(lesson.sections)")
                 .font(.caption.weight(.medium)).foregroundStyle(ink)
-            Label(course.time, systemImage: "clock")
+            informationRow(course.time, symbol: "clock")
                 .monospacedDigit()
-            Label(course.location.isEmpty ? "地点未提供" : course.location, systemImage: "mappin.and.ellipse")
-                .lineLimit(dynamicType.isAccessibilitySize ? 4 : 2)
-            Label(course.teacher.isEmpty ? "教师未提供" : course.teacher, systemImage: "person")
+            informationRow(course.location.isEmpty ? "地点未提供" : course.location, symbol: "mappin.and.ellipse")
+                .lineLimit(dynamicType.isAccessibilitySize ? 4 : 3)
+            informationRow(course.teacher.isEmpty ? "教师未提供" : course.teacher, symbol: "person")
                 .lineLimit(2)
-            Label("第 \(week) 周 · \(course.weeksText.isEmpty ? "周次未提供" : course.weeksText)", systemImage: "calendar")
+            informationRow("第 \(week) 周 · \(course.weeksText.isEmpty ? "周次未提供" : course.weeksText)", symbol: "calendar")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
         }
         .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            // 测量实际信息内容，而非可能撑到上限的外层弹性 frame。
-            GeometryReader { geometry in
-                Color.clear.preference(key: CourseCardSize.self,
-                                       value: CGSize(width: geometry.size.width + 32, height: geometry.size.height + 32))
-            }
+    }
+
+    private func informationRow(_ text: String, symbol: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol).frame(width: symbolWidth).foregroundStyle(ink)
+                .accessibilityHidden(true)
+            Text(text).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
