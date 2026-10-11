@@ -19,6 +19,12 @@ private enum SheetRoute: Identifiable {
     }
 }
 
+private struct ExpandedCourse {
+    let course: Course
+    let week: Int
+    let sourceID: String
+}
+
 struct ContentView: View {
     @EnvironmentObject private var store: TimetableStore
     @Environment(\.colorScheme) private var colorScheme
@@ -27,9 +33,59 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("scheduleViewMode") private var mode: ScheduleViewMode = .cards
     @State private var route: SheetRoute?
+    @State private var expandedCourse: ExpandedCourse?
+    @State private var expansionTransitionID: UUID?
+    @AccessibilityFocusState private var detailCloseFocused: Bool
     @Namespace private var courseTransitions
 
+    private var blocksBackground: Bool { expandedCourse != nil || expansionTransitionID != nil }
+
     var body: some View {
+        ZStack {
+            timetable
+                .allowsHitTesting(!blocksBackground)
+                .accessibilityHidden(blocksBackground)
+                // 源卡片保留在非 Lazy 网格中；展开期间固定滚动位置。
+                .scrollDisabled(blocksBackground)
+            if let selection = expandedCourse {
+                Color.black.opacity(0.16)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+                NavigationStack {
+                    CourseDetailView(course: selection.course, week: selection.week)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { closeCourse() }
+                                    .disabled(expansionTransitionID != nil)
+                                    .accessibilityFocused($detailCloseFocused)
+                            }
+                        }
+                }
+                .background(Design.background)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .courseExpansionGeometry(selection.sourceID, in: courseTransitions)
+                .padding(12)
+                .transition(.opacity)
+                .zIndex(1)
+                .accessibilityAddTraits(.isModal)
+                .accessibilityAction(.escape) { closeCourse() }
+            }
+        }
+        .tint(Design.accent(dark: colorScheme == .dark))
+        .accentColor(Design.accent(dark: colorScheme == .dark))
+        .respectMotionPreference()
+        .onChange(of: store.week) { _, _ in closeCourse(animated: false) }
+        .onChange(of: mode) { _, _ in closeCourse(animated: false) }
+        .onChange(of: dynamicType) { _, _ in closeCourse(animated: false) }
+        // 数据替换、编辑或删除时不再使用旧课程或旧位置；不触发课表刷新。
+        .onReceive(store.$doc.dropFirst()) { _ in closeCourse(animated: false) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.refreshToday() }
+        }
+    }
+
+    private var timetable: some View {
         NavigationStack {
             GeometryReader { container in
                 if store.hasData {
@@ -92,13 +148,43 @@ struct ContentView: View {
                 .courseZoomDestination(sheet.zoomSourceID, in: courseTransitions)
                 .respectMotionPreference()
             }
-            .timetableAlert(store, enabled: route == nil)
+            .timetableAlert(store, enabled: route == nil && !blocksBackground)
         }
-        .tint(Design.accent(dark: colorScheme == .dark))
-        .accentColor(Design.accent(dark: colorScheme == .dark))
-        .respectMotionPreference()
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.refreshToday() }
+    }
+
+    private func openCourse(_ course: Course, sourceID: String) {
+        guard !blocksBackground, route == nil else { return }
+        setExpandedCourse(ExpandedCourse(course: course, week: store.week, sourceID: sourceID))
+    }
+
+    private func closeCourse(animated: Bool = true) {
+        guard blocksBackground else { return }
+        if !animated {
+            // 源卡片可能已随周次、模式或数据改变而消失，避免匹配到新布局。
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                expandedCourse = nil
+                expansionTransitionID = nil
+                detailCloseFocused = false
+            }
+        } else {
+            guard expandedCourse != nil, expansionTransitionID == nil else { return }
+            setExpandedCourse(nil)
+        }
+    }
+
+    private func setExpandedCourse(_ selection: ExpandedCourse?) {
+        let transitionID = UUID()
+        expansionTransitionID = transitionID
+        withAnimation(reduceMotion ? nil : InterfaceMotion.expansion, completionCriteria: .removed) {
+            expandedCourse = selection
+        } completion: {
+            // 旧动画完成回调不能解除后续动画的交互锁。
+            if expansionTransitionID == transitionID {
+                expansionTransitionID = nil
+                detailCloseFocused = expandedCourse != nil
+            }
         }
     }
 
@@ -141,9 +227,11 @@ struct ContentView: View {
         ZStack(alignment: .top) {
             if mode == .cards {
                 WeekGrid(snapshot: store.presentation, today: store.todaySchedule.date,
-                         viewport: size, scrolls: scrolls, transitionNamespace: courseTransitions) { cluster, source in
+                         viewport: size, scrolls: scrolls, transitionNamespace: courseTransitions,
+                         expandedSourceID: expandedCourse?.sourceID) { cluster, source in
+                    guard !blocksBackground, route == nil else { return }
                     if cluster.isConflict { route = .conflict(cluster, store.week) }
-                    else { route = .course(cluster.lessons[0].course, store.week, source) }
+                    else { openCourse(cluster.lessons[0].course, sourceID: source) }
                 }.transition(.opacity)
             } else {
                 if scrolls {

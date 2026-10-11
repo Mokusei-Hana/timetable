@@ -30,6 +30,7 @@ struct WeekGrid: View {
     let viewport: CGSize
     let scrolls: Bool
     let transitionNamespace: Namespace.ID
+    let expandedSourceID: String?
     let select: (CourseCluster, String) -> Void
 
     var body: some View {
@@ -103,36 +104,44 @@ struct WeekGrid: View {
         let showLocation = !cluster.isConflict && width >= cardFont * 3.5 && height >= cardFont * 7.5
         let reserved = showLocation ? cardFont * 2.4 : (cluster.isConflict ? cardFont * 1.5 : 0)
         let lines = max(1, min(6, Int((height - padding * 2 - reserved) / (cardFont * 1.3))))
-        let source = "grid-\(snapshot.week)-\(cluster.id)"
-        return Button { select(cluster, source) } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                if cluster.isConflict {
-                    HStack(spacing: 2) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text("\(cluster.lessons.count)").lineLimit(1)
-                    }.font(.system(size: cardFont, weight: .bold))
+        let source = "grid-\(snapshot.week)-\(lesson.course.day)-\(cluster.startBlock)-\(cluster.id)"
+        return Group {
+            if expandedSourceID == source {
+                // 保留原网格占位；匹配源与详情交替存在，避免两个活动源竞争。
+                Color.clear.accessibilityHidden(true)
+            } else {
+                Button { select(cluster, source) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if cluster.isConflict {
+                            HStack(spacing: 2) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                Text("\(cluster.lessons.count)").lineLimit(1)
+                            }.font(.system(size: cardFont, weight: .bold))
+                        }
+                        Text(lesson.course.name)
+                            .font(.system(size: cardFont, weight: .semibold))
+                            .lineLimit(lines).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if showLocation {
+                            Text(lesson.shortLocation).font(.system(size: cardFont)).lineLimit(2)
+                        }
+                    }
+                    .multilineTextAlignment(.leading)
+                    .padding(padding)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .foregroundStyle(Design.ink(lesson.colorIndex, dark: dark))
+                    .background(Design.fill(lesson.colorIndex, dark: dark), in: RoundedRectangle(cornerRadius: 8))
+                    .clipped()
+                    .contentShape(Rectangle())
                 }
-                Text(lesson.course.name)
-                    .font(.system(size: cardFont, weight: .semibold))
-                    .lineLimit(lines).truncationMode(.tail)
-                Spacer(minLength: 0)
-                if showLocation {
-                    Text(lesson.shortLocation).font(.system(size: cardFont)).lineLimit(2)
-                }
+                .buttonStyle(CoursePressStyle())
+                .courseExpansionGeometry(source, in: transitionNamespace)
+                .transition(.opacity)
+                .accessibilityLabel(cluster.isConflict
+                    ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
+                    : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
+                .accessibilityHint("窄卡片省略的信息可在详情或列表中完整查看")
             }
-            .multilineTextAlignment(.leading)
-            .padding(padding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .foregroundStyle(Design.ink(lesson.colorIndex, dark: dark))
-            .background(Design.fill(lesson.colorIndex, dark: dark), in: RoundedRectangle(cornerRadius: 8))
-            .clipped()
-            .contentShape(Rectangle())
         }
-        .buttonStyle(CoursePressStyle())
-        .courseZoomSource(source, in: transitionNamespace)
-        .accessibilityLabel(cluster.isConflict
-            ? "\(cluster.lessons.count) 门课程时间冲突，轻点查看全部"
-            : "\(lesson.course.name)，\(lesson.sections)，\(lesson.course.time)，\(lesson.course.location)")
-        .accessibilityHint("窄卡片省略的信息可在详情或列表中完整查看")
     }
 }

@@ -110,6 +110,18 @@ private struct CourseZoomSource: ViewModifier {
     }
 }
 
+/// 仅用于同一视图层级中的卡片与 Overlay；不跨系统 Sheet 匹配。
+private struct CourseExpansionGeometry: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let id: String
+    let namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if reduceMotion { content }
+        else { content.matchedGeometryEffect(id: id, in: namespace) }
+    }
+}
+
 private struct CourseZoomDestination: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let id: String?
@@ -153,6 +165,10 @@ extension View {
 
     func courseZoomDestination(_ id: String?, in namespace: Namespace.ID) -> some View {
         modifier(CourseZoomDestination(id: id, namespace: namespace))
+    }
+
+    func courseExpansionGeometry(_ id: String, in namespace: Namespace.ID) -> some View {
+        modifier(CourseExpansionGeometry(id: id, namespace: namespace))
     }
 
     func respectMotionPreference() -> some View { modifier(MotionAccessibility()) }
