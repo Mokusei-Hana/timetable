@@ -42,35 +42,7 @@ struct ContentView: View {
     private var blocksBackground: Bool { expandedCourse != nil }
 
     var body: some View {
-        ZStack {
-            timetable
-                .allowsHitTesting(!blocksBackground)
-                .accessibilityHidden(blocksBackground)
-                // 源卡片保留在非 Lazy 网格中；展开期间固定滚动位置。
-                .scrollDisabled(blocksBackground)
-        }
-        .overlayPreferenceValue(CourseCardAnchors.self) { anchors in
-            GeometryReader { geometry in
-                if let selection = expandedCourse {
-                    CourseCardExpansion(
-                        cluster: selection.cluster, week: selection.week, fontSize: selection.fontSize,
-                        sourceFrame: anchors[selection.sourceID].map { geometry[$0] },
-                        sourceViewport: anchors[CourseCardAnchors.viewportID].map { geometry[$0] },
-                        viewport: geometry.size, safeArea: geometry.safeAreaInsets
-                    ) { fallback in
-                        // 已移除视图的动画回调不能关闭后来打开的同一门课程。
-                        if expandedCourse?.sessionID == selection.sessionID {
-                            closeCourse(animated: fallback)
-                            if !fallback { focusedSourceID = selection.sourceID }
-                        }
-                    }
-                    .id(selection.sessionID)
-                    .transition(.opacity)
-                    .zIndex(1)
-                }
-            }
-            .allowsHitTesting(blocksBackground)
-        }
+        timetable
         .tint(Design.accent(dark: colorScheme == .dark))
         .accentColor(Design.accent(dark: colorScheme == .dark))
         .respectMotionPreference()
@@ -119,6 +91,33 @@ struct ContentView: View {
                     }
                 }
             }
+            .allowsHitTesting(!blocksBackground)
+            .accessibilityHidden(blocksBackground)
+            // 源卡片保留在非 Lazy 网格中；展开期间固定滚动位置。
+            .scrollDisabled(blocksBackground)
+            // 在导航内容层读取锚点，避免跨 NavigationStack 展示边界传递。
+            .overlayPreferenceValue(CourseCardAnchors.self) { anchors in
+                GeometryReader { geometry in
+                    if let selection = expandedCourse {
+                        CourseCardExpansion(
+                            cluster: selection.cluster, week: selection.week, fontSize: selection.fontSize,
+                            sourceFrame: anchors[selection.sourceID].map { geometry[$0] },
+                            sourceViewport: anchors[CourseCardAnchors.viewportID].map { geometry[$0] },
+                            viewport: geometry.size, safeArea: geometry.safeAreaInsets
+                        ) { fallback in
+                            // 已移除视图的动画回调不能关闭后来打开的同一门课程。
+                            if expandedCourse?.sessionID == selection.sessionID {
+                                closeCourse(animated: fallback)
+                                if !fallback { focusedSourceID = selection.sourceID }
+                            }
+                        }
+                        .id(selection.sessionID)
+                        .transition(.opacity)
+                        .zIndex(1)
+                    }
+                }
+                .allowsHitTesting(blocksBackground)
+            }
             .animation(reduceMotion ? nil : InterfaceMotion.content, value: store.hasData)
             .background(Design.background)
             .navigationTitle("课程表")
@@ -127,6 +126,8 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { route = .settings } label: { Image(systemName: "slider.horizontal.3") }
                         .accessibilityLabel("数据管理")
+                        .disabled(blocksBackground)
+                        .accessibilityHidden(blocksBackground)
                 }
             }
             .sheet(item: $route) { sheet in
@@ -154,7 +155,7 @@ struct ContentView: View {
 
     private func openCourse(_ cluster: CourseCluster, sourceID: String, fontSize: CGFloat) {
         guard !blocksBackground, route == nil else { return }
-        // Overlay 首帧复制真实源卡片；动画在测得详情的自然尺寸后开始。
+        // Overlay 首帧复制真实源卡片；锚点或测量缺失时也能展示摘要。
         focusedSourceID = nil
         expandedCourse = ExpandedCourse(cluster: cluster, week: store.week, sourceID: sourceID, fontSize: fontSize)
     }
